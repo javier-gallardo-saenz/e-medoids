@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "emedoids"
+version = "0.1.0"
+description = "Mini-batch k-medoids with exponentially averaged candidate costs, after e-means."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy", "numba"]
+
+[project.optional-dependencies]
+examples = ["rdkit", "kmedoids"]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["emedoids"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
