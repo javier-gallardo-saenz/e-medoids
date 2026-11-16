@@ -57,7 +57,8 @@ def build_kernels(dist):
         return labels, d1, d2
 
     @njit(parallel=True)
-    def ema_step(X, idx, d1, d2, order, starts, pool, S, G, A, R, med_slot, alpha, n_new):
+    def ema_step(X, idx, d1, d2, order, starts, pool, S, G, A, R, age, med_slot, alpha,
+                 n_new, probation):
         """One e-medoids update of every cluster from one mini-batch (in place).
 
         pool[j]  : rows of X that are candidate medoids of cluster j (-1 = empty)
@@ -68,6 +69,11 @@ def build_kernels(dist):
                    an *additional* medoid; A[j, c] is its EMA weight (G / A is
                    unbiased however young the candidate is)
         R[j]     : sum of d2(x) - d1(x), the loss added if medoid j were removed
+        age[j, c]: number of batches candidate c has been scored on
+
+        Up to n_new points enter each pool per batch. A candidate is on
+        probation until it has been scored on `probation` batches: before that
+        it can neither be evicted nor become the medoid.
 
         Returns the number of distance evaluations performed.
         """
@@ -87,9 +93,8 @@ def build_kernels(dist):
 
             # 1. Newcomers: the first batch members of the cluster (a uniform
             #    sample, since batches are shuffled) replace the worst-scoring
-            #    candidates. They inherit the medoid's cost, i.e. they are
+            #    candidates that are off probation. They inherit the medoid's cost, i.e. they are
             #    presumed as good as the medoid until the data says otherwise.
-            fresh = np.zeros(m, np.bool_)
             if nj >= 2:
                 for t in range(min(n_new, nj)):
                     cand = idx[order[lo + t]]
@@ -98,9 +103,14 @@ def build_kernels(dist):
                         if pool[j, c] == cand:
                             pooled = True
                             break
-                        if c == ms or c == guard or fresh[c]:
+                        if c == ms or c == guard:
                             continue
-                        s = np.inf if pool[j, c] < 0 else S[j, c]  # empty slots first
+                        if pool[j, c] < 0:
+                            s = np.inf  # empty slots first
+                        elif age[j, c] < probation:
+                            continue
+                        else:
+                            s = S[j, c]
                         if s > worst_s:
                             worst, worst_s = c, s
                     if pooled or worst < 0:
@@ -108,7 +118,7 @@ def build_kernels(dist):
                     pool[j, worst] = cand
                     S[j, worst] = S[j, ms]
                     G[j, worst] = A[j, worst] = 0.0
-                    fresh[worst] = True
+                    age[j, worst] = 0
 
             # 2. Batch statistics, then the e-means EMA update. All candidates of
             #    a cluster are scored on the same points, so their differences
@@ -134,16 +144,19 @@ def build_kernels(dist):
                         if d < d1[i] and idx[i] != p:
                             gain += d1[i] - d
                     evals += nj
-                    if fresh[c]:  # a newcomer is in the batch: drop its d(x, x) = 0
+                    if age[j, c] == 0:  # a newcomer is in the batch: drop its d(x, x) = 0
                         cost *= nj / (nj - 1)
                     G[j, c] = keep * G[j, c] + alpha * gain
                     A[j, c] = keep * A[j, c] + alpha
                 S[j, c] = keep * S[j, c] + alpha * cost
+                age[j, c] += 1
 
-            # 3. The medoid is the candidate with the lowest averaged cost.
+            # 3. The medoid is the candidate off probation with the lowest averaged cost.
             best, new = np.inf, ms
             for c in range(m):
-                if pool[j, c] >= 0 and S[j, c] < best:
+                if pool[j, c] < 0 or S[j, c] >= best:
+                    continue
+                if c == ms or age[j, c] >= probation:
                     best, new = S[j, c], c
             if new != ms:  # gains were measured against the old medoid
                 G[j, new] = A[j, new] = G[j, ms] = A[j, ms] = 0.0
@@ -196,7 +209,17 @@ def build_kernels(dist):
                 D[i, j] = D[j, i] = dist(X[i], X[j])
         return D
 
+    @njit(parallel=True)
+    def cross(X, Y):
+        """(len(X), len(Y)) float32 distances between two sets of points."""
+        D = np.empty((X.shape[0], Y.shape[0]), np.float32)
+        for i in prange(X.shape[0]):
+            for j in range(Y.shape[0]):
+                D[i, j] = dist(X[i], Y[j])
+        return D
+
     return SimpleNamespace(
+        cross=cross,
         assign=assign,
         ema_step=ema_step,
         pool_costs=pool_costs,

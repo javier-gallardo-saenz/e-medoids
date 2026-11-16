@@ -67,3 +67,12 @@ def test_custom_metric():
     X = blobs(n=500, k=4)
     model = EMedoids(4, manhattan, epochs=2, random_state=0).fit(X)
     assert model.labels_.shape == (500,)
+
+
+def test_probation_default_follows_the_number_of_updates():
+    X = blobs()
+    short = EMedoids(10, "manhattan", epochs=1, random_state=0).fit(X)
+    long = EMedoids(10, "manhattan", epochs=5, random_state=0).fit(X)
+    assert (short.n_updates_, short.probation_) == (23, 1)
+    assert (long.n_updates_, long.probation_) == (115, 2)
+    assert EMedoids(10, "manhattan", probation=3, random_state=0).fit(X).probation_ == 3

@@ -80,3 +80,61 @@ class FasterPAM:
         self.inertia_ = float(res.loss)
         self.n_distance_evals_ = n * (n - 1) // 2
         return self
+
+
+class OneBatchPAM:
+    """OneBatchPAM (de Mathelin et al., AAAI 2025) via the authors' `onebatch`
+    package: FasterPAM-style swaps over all n candidates, with the loss estimated
+    on one random batch of m points. Needs the (n, m) distance matrix: n m
+    evaluations and 4 n m bytes; m defaults to 100 ln(n k).
+
+    The matrix is computed with our own kernels, so the distance code is the
+    same as for the other methods. The swap loop is the authors' (single thread).
+    `seconds_` splits the time into "distances", "swaps" and "assign" (the full
+    assignment needed for labels, which the package itself does not produce).
+    """
+
+    def __init__(self, n_clusters, metric="euclidean", batch_size="auto", weighting=True,
+                 random_state=None):
+        self.n_clusters = n_clusters
+        self.metric = metric
+        self.batch_size = batch_size
+        self.weighting = weighting  # the package's default importance weighting
+        self.random_state = random_state
+
+    def fit(self, X):
+        import time
+
+        import onebatch  # optional dependency
+
+        X = np.ascontiguousarray(X)
+        n, k = X.shape[0], self.n_clusters
+        K = build_kernels(resolve(self.metric))
+        seconds = {}
+
+        def distance(A, B, n_jobs=None):
+            start = time.perf_counter()
+            D = K.cross(A, np.ascontiguousarray(B))
+            seconds["distances"] = time.perf_counter() - start
+            return D
+
+        start = time.perf_counter()
+        model = onebatch.OneBatchPAM(n_medoids=k, distance=distance, batch_size=self.batch_size,
+                                     weighting=self.weighting,
+                                     random_state=self.random_state).fit(X)
+        seconds["swaps"] = time.perf_counter() - start - seconds["distances"]
+
+        start = time.perf_counter()
+        medoids = np.asarray(model.medoid_indices_, np.int64)
+        labels, dmin, _ = K.assign(X, np.arange(n, dtype=np.int64), X[medoids])
+        seconds["assign"] = time.perf_counter() - start
+
+        self.medoid_indices_ = medoids
+        self.cluster_centers_ = X[medoids]
+        self.labels_ = labels
+        self.inertia_ = float(dmin.sum())
+        self.batch_size_ = len(model.labels_)
+        self.n_distance_evals_ = n * self.batch_size_ + n * k
+        self.n_iter_ = model.n_iter_
+        self.seconds_ = seconds
+        return self

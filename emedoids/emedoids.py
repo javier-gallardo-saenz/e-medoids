@@ -20,7 +20,7 @@ import numpy as np
 from .init import initial_medoids
 from .kernels import build_kernels, group
 from .metrics import resolve
-from .schedule import cosine_step, default_batch_size
+from .schedule import cosine_step, default_batch_size, default_probation
 
 
 class EMedoids:
@@ -31,8 +31,12 @@ class EMedoids:
     n_clusters : number of medoids k.
     metric : name in `emedoids.metrics.METRICS` or a jitted ``dist(x, y)``.
     epochs : passes over the data (T).
-    pool_size : candidates kept per cluster (m), including the medoid.
-    n_new : candidates replaced per batch (default: half the pool).
+    pool_size : candidates kept per cluster (m), including the medoid. Half of
+        them may be replaced per batch.
+    probation : batches a newcomer is scored on before it can be evicted,
+        become a medoid or be used in a swap. Each batch beyond the first adds
+        pool_size / 2 slots to the pool. Default: 2 for runs of at least 60
+        updates, else 1 (`schedule.default_probation`).
     batch_size : mini-batch size (default: about ten points per cluster).
     alpha0 : initial EMA step, cosine-annealed to alpha0 / 10. With 1, the
         first batches overwrite the statistics and averaging sets in gradually.
@@ -49,17 +53,18 @@ class EMedoids:
     inertia_ : sum of distances of all points to their medoid.
     n_distance_evals_ : distance evaluations used (hardware-independent cost).
     n_swaps_ : medoids relocated by swaps.
+    n_updates_, probation_ : number of mini-batch updates and the probation used.
     history_ : per-batch mean distance to the medoid (a noisy training curve).
     """
 
     def __init__(self, n_clusters, metric="euclidean", epochs=5, pool_size=16,
-                 n_new=None, batch_size=None, alpha0=1.0, init="random",
+                 probation=None, batch_size=None, alpha0=1.0, init="random",
                  swap=True, swap_every=2, finalize=True, random_state=None):
         self.n_clusters = n_clusters
         self.metric = metric
         self.epochs = epochs
         self.pool_size = pool_size
-        self.n_new = n_new
+        self.probation = probation
         self.batch_size = batch_size
         self.alpha0 = alpha0
         self.init = init
@@ -70,20 +75,24 @@ class EMedoids:
 
     def fit(self, X):
         X = np.ascontiguousarray(X)
-        n, k, m, T = X.shape[0], self.n_clusters, self.pool_size, self.epochs
+        n, k, T = X.shape[0], self.n_clusters, self.epochs
         K = build_kernels(resolve(self.metric))
         rng = np.random.default_rng(self.random_state)
 
         B = self.batch_size or default_batch_size(n, k)
         n_batches = max(1, n // B)
         total = T * n_batches
-        n_new = self.n_new or m // 2
+        probation = self.probation or default_probation(total)
+        n_new = self.pool_size // 2
+        m = self.pool_size + n_new * (probation - 1)  # extra slots for probation
 
         # State (see kernels.ema_step); all statistics start at zero.
         pool = np.full((k, m), -1, np.int64)
         pool[:, 0], evals = initial_medoids(X, k, self.init, K.assign, rng)
         S, G, A = np.zeros((k, m)), np.zeros((k, m)), np.zeros((k, m))
         R = np.zeros(k)
+        age = np.zeros((k, m), np.int64)
+        age[:, 0] = _MATURE
         med_slot = np.zeros(k, np.int64)
         rows = np.arange(k)
 
@@ -94,11 +103,12 @@ class EMedoids:
                 labels, d1, d2 = K.assign(X, idx, X[pool[rows, med_slot]])
                 order, starts = group(labels, k)
                 evals += idx.size * k + K.ema_step(
-                    X, idx, d1, d2, order, starts, pool, S, G, A, R, med_slot, alpha, n_new)
+                    X, idx, d1, d2, order, starts, pool, S, G, A, R, age, med_slot, alpha,
+                    n_new, probation)
                 history.append(d1.mean())
                 t += 1
                 if self.swap and t % self.swap_every == 0:
-                    n_swaps += _swap(pool, S, G, A, R, med_slot)
+                    n_swaps += _swap(pool, S, G, A, R, age, med_slot, probation)
 
         medoids = pool[rows, med_slot]
         everything = np.arange(n, dtype=np.int64)
@@ -129,6 +139,7 @@ class EMedoids:
         self.inertia_ = float(d1.sum())
         self.n_distance_evals_ = int(evals)
         self.n_swaps_ = n_swaps
+        self.n_updates_, self.probation_ = total, probation
         self.history_ = np.array(history)
         self.batch_size_ = B
         return self
@@ -140,7 +151,10 @@ class EMedoids:
         return K.assign(X, np.arange(X.shape[0], dtype=np.int64), self.cluster_centers_)[0]
 
 
-def _swap(pool, S, G, A, R, med_slot):
+_MATURE = 1 << 30  # age given to medoids that did not earn it batch by batch
+
+
+def _swap(pool, S, G, A, R, age, med_slot, probation):
     """Relocate medoids, PAM-style, using the EMA statistics. Returns the count.
 
     Removing medoid j costs about R[j]; making candidate c of another cluster i
@@ -152,7 +166,7 @@ def _swap(pool, S, G, A, R, med_slot):
     invalidates its statistics.
     """
     k = R.size
-    gain = np.where((pool >= 0) & (A > 0), G / np.maximum(A, 1e-300), 0.0)
+    gain = np.where((pool >= 0) & (A > 0) & (age >= probation), G / np.maximum(A, 1e-300), 0.0)
     best = gain.argmax(axis=1)
     saving = gain[np.arange(k), best]
     cost = R.copy()
@@ -165,7 +179,8 @@ def _swap(pool, S, G, A, R, med_slot):
         if saving[i] <= R[j]:
             saving[j] = saved
             break
-        pool[j], S[j], G[j], A[j], med_slot[j] = -1, 0.0, 0.0, 0.0, 0
+        pool[j], S[j], G[j], A[j], age[j], med_slot[j] = -1, 0.0, 0.0, 0.0, 0, 0
+        age[j, 0] = _MATURE
         pool[j, 0], pool[i, best[i]] = pool[i, best[i]], -1
         R[j] = saving[i]  # what the new medoid is believed to be worth
         G[i], A[i] = 0.0, 0.0  # measured against the old partition of i
