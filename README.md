@@ -167,9 +167,28 @@ eviction alone changed nothing (+0.04% ± 0.08), also blocking promotion gave �
 and also blocking swaps gave −0.25% ± 0.05. A plain pool of the same 24 slots without
 probation gave +0.06% ± 0.10. The extra slots cost 5-20% more distance evaluations.
 
-Two things are open, both fitted on ZINC only: whether 60 is the right threshold, and
-when $h = 3$ pays off. $h = 3$ was worse than $h = 2$ below about 200 updates and slightly
-better above (−0.32% ± 0.06 at 488 updates), a difference still within noise.
+Two things are open: whether 60 is the right threshold, and when $h = 3$ pays off. A
+second dataset (ChEMBL, 3-5 seeds) agrees on the second and disagrees on the first:
+
+| updates $M$ | ZINC, $h = 2$ | ZINC, $h = 3$ | ChEMBL, $h = 2$ | ChEMBL, $h = 3$ |
+|---|---|---|---|---|
+| 10-12 | +0.15% | +0.54% | −0.08% | +0.16% |
+| 20-24 | +0.04% | +0.35% | −0.30% | −0.23% |
+| 36-38 | +0.10% | +0.03% | −0.21% | −0.22% |
+| 60-61 | −0.12% | −0.08% | −0.48% | −0.57% |
+| 120-122 | −0.10% | −0.09% | −0.63% | −0.79% |
+| 194-305 | −0.12% | −0.21% | −0.70% | −0.92% |
+| 488 | −0.25% | −0.32% | −0.51% | −0.56% |
+| 1950-2440 | −0.23% | −0.28% | −0.55% | −0.68% |
+
+Standard errors are 0.03-0.10%. Rows pair runs with a similar number of updates; $n$ and
+$k$ differ between the two datasets.
+
+- **Threshold.** On ChEMBL $h = 2$ already helps from about 20 updates, where on ZINC it
+  is neutral or slightly harmful. 60 is safe on both but leaves gains unused on ChEMBL.
+- **$h = 3$.** From about 200 updates on, $h = 3$ was better than $h = 2$ in all six
+  comparisons across both datasets, by 0.05-0.2%. Below that it is not reliably better.
+- Probation is worth more on ChEMBL (0.5-0.9%) than on ZINC (0.1-0.3%).
 
 ### Finalisation
 
@@ -256,7 +275,12 @@ once ($n m$ evaluations, $4 n m$ bytes) and then sweeps over it.
 Setup: the authors' package (`onebatch` 0.1.0) with its defaults, $m = 100 \ln(n k)$
 and importance weighting on. Its distance matrix is computed with our kernels, so both
 methods run the same distance code. Times include assigning all points to their medoid.
-Reproduce with `python examples/vs_onebatchpam.py zinc --k 100` (or `blobs --n 500000`).
+Reproduce with `python examples/vs_onebatchpam.py zinc --k 100` (or `chembl`, or
+`blobs --n 500000`).
+
+ChEMBL is a random sample of 500k compounds from ChEMBL 37, with the same fingerprints
+and distance as ZINC. It has more close neighbours: in sets of equal size, 36% of ChEMBL
+compounds have a neighbour within Tanimoto distance 0.3, against 14% for ZINC.
 
 **16 threads**, 3 seeds, median time and mean loss. OneBatchPAM's swap loop is
 single-threaded; only its distance matrix uses the threads.
@@ -269,6 +293,12 @@ single-threaded; only its distance matrix uses the threads.
 | ZINC 250k | 1000 | e-medoids (T=1) | 2.5 | 7.6e8 | 0.6395 |
 | | | e-medoids (T=5) | 7.6 | 1.8e9 | 0.6299 |
 | | | OneBatchPAM, m = 1933 | 5.9 | 7.3e8 | 0.6600 |
+| ChEMBL 500k | 100 | e-medoids (T=1) | 0.83 | 1.7e8 | 0.7302 |
+| | | e-medoids (T=5) | 2.23 | 4.2e8 | 0.7274 |
+| | | OneBatchPAM, m = 1772 | 6.29 | 9.4e8 | 0.7427 |
+| ChEMBL 500k | 1000 | e-medoids (T=1) | 3.4 | 1.5e9 | 0.6483 |
+| | | e-medoids (T=5) | 8.3 | 3.6e9 | 0.6415 |
+| | | OneBatchPAM, m = 2003 | 12.4 | 1.5e9 | 0.6841 |
 | blobs 500k | 100 | e-medoids (T=1) | 0.33 | 1.7e8 | 13.975 |
 | | | e-medoids (T=5) | 1.13 | 4.2e8 | 13.858 |
 | | | OneBatchPAM, m = 1772 | 5.94 | 9.4e8 | 14.531 |
@@ -287,6 +317,8 @@ row uses the largest batch that did and is not a like-for-like comparison.
 |---|---|---|---|---|
 | ZINC 250k | 100 | 1.2 s, 0.7172 | 3.2 s, 0.7119 | 7.0 s, 0.7255 |
 | ZINC 250k | 1000 | 7.5 s, 0.6395 | 17.4 s, 0.6300 | 12.1 s, 0.6597 |
+| ChEMBL 500k | 100 | 3.9 s, 0.7303 | 8.7 s, 0.7272 | 19.0 s, 0.7425 |
+| ChEMBL 500k | 1000 | 14.2 s, 0.6480 | 35.6 s, 0.6415 | 24.2 s, 0.6842 |
 | blobs 500k | 100 | 1.2 s, 13.979 | 3.5 s, 13.851 | 8.8 s, 14.549 |
 
 **Is this only because OneBatchPAM's default batch is small?** No. A larger batch does
@@ -301,8 +333,10 @@ Reading these:
 
 - With default settings e-medoids reaches a lower loss in less time on every problem,
   with one thread or sixteen. The exception in time is $k = 1000$ at five epochs on one
-  thread, where e-medoids is slower but 4.5% lower in loss; one epoch is already both
-  faster and lower.
+  thread, where e-medoids is slower but 4.5% (ZINC) and 6.2% (ChEMBL) lower in loss;
+  one epoch is already both faster and lower.
+- The gap in loss is larger on ChEMBL than on ZINC (2.1% against 1.9% at $k = 100$,
+  6.6% against 4.8% at $k = 1000$), the dataset with more real structure.
 - Memory is the practical limit: its matrix grows with $n$, while e-medoids keeps
   $k \cdot m_h$ candidates whatever $n$.
 - The $\log n$ in OneBatchPAM's $O(n \log n)$ grows slowly ($m$ rises 8% from 250k to 1M
@@ -333,9 +367,9 @@ These conclusions rest on two datasets; the defaults are not tuned beyond them.
 Each needs only a jitted `dist(x, y)`; the cost of one distance is what makes avoiding
 `n^2` and `sum n_j^2` matter.
 
-- **Clustered chemistry**: ChEMBL or a combinatorial library has tighter series than
-  ZINC's random drug-like molecules, so it tests whether swaps recover real structure
-  (`examples/molecules.py --smiles file.smi`).
+- **More clustered chemistry**: ChEMBL is covered above. A single target's compounds or
+  a combinatorial library would have tighter series still, with clusters closer in size
+  to the series themselves (`examples/molecules.py --smiles file.smi`).
 - **MD conformations** with RMSD after alignment: expensive distance, strongly
   unequal cluster sizes (metastable states).
 - **Atomic environments** (e.g. SOAP descriptors with a kernel distance): medoids as
