@@ -35,8 +35,8 @@ class EMedoids:
         them may be replaced per batch.
     probation : batches a newcomer is scored on before it can be evicted,
         become a medoid or be used in a swap. Each batch beyond the first adds
-        pool_size / 2 slots to the pool. Default: 2 for runs of at least 60
-        updates, else 1 (`schedule.default_probation`).
+        pool_size / 2 slots to the pool. Default: 3 for runs of at least 200
+        updates, 2 from 60, else 1 (`schedule.default_probation`).
     batch_size : mini-batch size (default: about ten points per cluster).
     alpha0 : initial EMA step, cosine-annealed to alpha0 / 10. With 1, the
         first batches overwrite the statistics and averaging sets in gradually.

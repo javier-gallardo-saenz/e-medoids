@@ -140,14 +140,18 @@ Candidates on probation sit in extra slots, so that waiting does not reduce the 
 of newcomers. The pool holds $m/2$ established candidates plus $h$ cohorts of $m/2$
 newcomers:
 
-$$m_h = \frac{m}{2} + h \cdot \frac{m}{2}, \qquad m_1 = m = 16, \quad m_2 = 24.$$
+$$m_h = \frac{m}{2} + h \cdot \frac{m}{2}, \qquad m_1 = m = 16, \quad m_2 = 24, \quad m_3 = 32.$$
 
 $h = 1$ is the algorithm without probation. The default depends on the number of updates
 $M$, which is known before the first batch:
 
-$$h = 2 \ \text{ if } M \ge 60, \qquad h = 1 \ \text{ otherwise}.$$
+$$h = \begin{cases} 3 & M \ge 200, \\ 2 & 60 \le M < 200, \\ 1 & M < 60. \end{cases}$$
 
-Waiting costs updates, and a short run cannot afford it. Measured change in loss from
+Waiting costs updates, and a short run cannot afford it; a long run can afford to wait
+longer and gets a more reliable verdict on each newcomer. With the default batch, one
+epoch over 250k molecules at $k = 100$ has 244 updates ($h = 3$), five epochs over 250k
+at $k = 1000$ have 153 ($h = 2$), and one epoch over 500k at $k = 1000$ has 61 ($h = 2$).
+The two thresholds are argued below. Measured change in loss from
 $h = 1$ to $h = 2$ on ZINC fingerprints (5-8 seeds, paired, $\pm$ standard error):
 
 | n | k | epochs | updates $M$ | change in loss |
@@ -167,8 +171,8 @@ eviction alone changed nothing (+0.04% ± 0.08), also blocking promotion gave �
 and also blocking swaps gave −0.25% ± 0.05. A plain pool of the same 24 slots without
 probation gave +0.06% ± 0.10. The extra slots cost 5-20% more distance evaluations.
 
-Two things are open: whether 60 is the right threshold, and when $h = 3$ pays off. A
-second dataset (ChEMBL, 3-5 seeds) agrees on the second and disagrees on the first:
+Both thresholds were checked on a second dataset (ChEMBL, 3-5 seeds), with $h = 2$ and
+$h = 3$ against $h = 1$:
 
 | updates $M$ | ZINC, $h = 2$ | ZINC, $h = 3$ | ChEMBL, $h = 2$ | ChEMBL, $h = 3$ |
 |---|---|---|---|---|
@@ -184,10 +188,15 @@ second dataset (ChEMBL, 3-5 seeds) agrees on the second and disagrees on the fir
 Standard errors are 0.03-0.10%. Rows pair runs with a similar number of updates; $n$ and
 $k$ differ between the two datasets.
 
-- **Threshold.** On ChEMBL $h = 2$ already helps from about 20 updates, where on ZINC it
-  is neutral or slightly harmful. 60 is safe on both but leaves gains unused on ChEMBL.
-- **$h = 3$.** From about 200 updates on, $h = 3$ was better than $h = 2$ in all six
-  comparisons across both datasets, by 0.05-0.2%. Below that it is not reliably better.
+- **$h = 3$ from 200 updates.** From about 200 updates on, $h = 3$ was better than
+  $h = 2$ in all six comparisons across both datasets (ZINC at 194, 488 and 1950
+  updates, ChEMBL at 305, 488 and 2440), by 0.05-0.2%. Between 60 and 120 updates it
+  tied on ZINC, and below 60 it was clearly worse on both. Both datasets agree, so this
+  is the default. The crossover lies somewhere between 120 and 194 updates; 200 is the
+  round number above all the evidence.
+- **$h = 2$ from 60 updates, still open.** On ChEMBL $h = 2$ already helps from about 20
+  updates, where on ZINC it is neutral or slightly harmful. 60 is safe on both but leaves
+  gains unused on ChEMBL; a third dataset should decide whether to lower it.
 - Probation is worth more on ChEMBL (0.5-0.9%) than on ZINC (0.1-0.3%).
 
 ### Finalisation
@@ -225,6 +234,10 @@ Loss is the mean distance to the assigned medoid; gap is relative to the best me
 the table. One seed per row, 16 threads, compilation excluded. All methods share the same
 distance kernels. Times come from a single run and varied by up to 3x between runs on the
 same machine; distance evaluations do not. Reproduce with `python examples/molecules.py` and `python examples/blobs.py`.
+
+All tables in this section were run before $h = 3$ became the default for runs of 200+
+updates, so those runs used $h = 2$. By the probation evidence above, the current default
+lowers their loss by a further 0.05-0.2%, at a few percent more distance evaluations.
 
 **Molecules**: ZINC-250k, 2048-bit Morgan fingerprints (radius 2), Tanimoto distance.
 
@@ -367,9 +380,6 @@ These conclusions rest on two datasets; the defaults are not tuned beyond them.
 Each needs only a jitted `dist(x, y)`; the cost of one distance is what makes avoiding
 `n^2` and `sum n_j^2` matter.
 
-- **More clustered chemistry**: ChEMBL is covered above. A single target's compounds or
-  a combinatorial library would have tighter series still, with clusters closer in size
-  to the series themselves (`examples/molecules.py --smiles file.smi`).
 - **MD conformations** with RMSD after alignment: expensive distance, strongly
   unequal cluster sizes (metastable states).
 - **Atomic environments** (e.g. SOAP descriptors with a kernel distance): medoids as

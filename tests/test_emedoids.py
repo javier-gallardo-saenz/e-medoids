@@ -74,5 +74,7 @@ def test_probation_default_follows_the_number_of_updates():
     short = EMedoids(10, "manhattan", epochs=1, random_state=0).fit(X)
     long = EMedoids(10, "manhattan", epochs=5, random_state=0).fit(X)
     assert (short.n_updates_, short.probation_) == (23, 1)
+    longer = EMedoids(10, "manhattan", epochs=10, random_state=0).fit(X)
     assert (long.n_updates_, long.probation_) == (115, 2)
+    assert (longer.n_updates_, longer.probation_) == (230, 3)
     assert EMedoids(10, "manhattan", probation=3, random_state=0).fit(X).probation_ == 3
